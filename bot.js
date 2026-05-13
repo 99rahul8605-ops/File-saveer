@@ -4,11 +4,10 @@ const express = require("express");
 
 const TOKEN = process.env.BOT_TOKEN;
 const MONGO_URI = process.env.MONGO_URI;
-const BOT_USERNAME = process.env.BOT_USERNAME; // e.g. myfilebot (without @)
 const PORT = process.env.PORT || 3000;
 
-if (!TOKEN || !MONGO_URI || !BOT_USERNAME) {
-  console.error("Missing env: BOT_TOKEN, MONGO_URI, BOT_USERNAME required hai.");
+if (!TOKEN || !MONGO_URI) {
+  console.error("Missing env: BOT_TOKEN aur MONGO_URI required hai.");
   process.exit(1);
 }
 
@@ -72,15 +71,23 @@ async function sendFile(chatId, record) {
 }
 
 const bot = new TelegramBot(TOKEN, { polling: true });
-console.log("Bot started!");
 
-// /start — normal + deep link dono
+// Startup pe API se username lo
+let BOT_USERNAME = "";
+bot.getMe().then((me) => {
+  BOT_USERNAME = me.username;
+  console.log(`Bot started: @${BOT_USERNAME}`);
+}).catch((err) => {
+  console.error("getMe failed:", err.message);
+  process.exit(1);
+});
+
+// /start — normal + deep link
 bot.onText(/\/start(.*)/, async (msg, match) => {
   const chatId = msg.chat.id;
   const param = match[1].trim();
 
   if (param) {
-    // Deep link se aaya — file bhej do
     try {
       const record = await FileRecord.findOne({ code: { $regex: new RegExp(`^${param}$`, "i") } });
       if (!record) return bot.sendMessage(chatId, `File nahi mili. Link galat ya delete ho gaya.`);
@@ -154,14 +161,13 @@ bot.on("message", async (msg) => {
     await bot.deleteMessage(chatId, processing.message_id);
 
     await bot.sendMessage(chatId,
-      `✅ ${fileInfo.file_name}\n\nFile ka link neeche hai — click karo file aa jaayegi:`,
+      `✅ ${fileInfo.file_name}\n\nLink pe click karo — file aa jaayegi:`,
       {
         reply_markup: {
           inline_keyboard: [[{ text: "📥 File Lo", url: link }]]
         }
       }
     );
-    // Plain text link bhi — copy karne ke liye
     await bot.sendMessage(chatId, link, { disable_web_page_preview: true });
 
   } catch (err) {
