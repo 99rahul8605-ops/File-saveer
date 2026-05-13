@@ -7,7 +7,7 @@ WORKDIR /app
 COPY package*.json ./
 
 # Install all dependencies
-RUN npm ci --only=production
+RUN npm ci --omit=dev
 
 # ─── Stage 2: Production ──────────────────────────────────────────────────────
 FROM node:20-alpine
