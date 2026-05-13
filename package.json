@@ -1,0 +1,22 @@
+{
+  "name": "telegram-file-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot that converts files to shareable links using MongoDB",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js",
+    "dev": "nodemon bot.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "mongoose": "^8.2.0",
+    "node-telegram-bot-api": "^0.64.0",
+    "uuid": "^9.0.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
