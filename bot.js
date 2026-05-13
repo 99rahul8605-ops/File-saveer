@@ -182,4 +182,22 @@ bot.on("message", async (msg) => {
   }
 });
 
-bot.on("polling_error", (err) => console.error("Polling error:", err.message));
+// Conflict aaye to process band karo — Render automatically restart karega
+bot.on("polling_error", (err) => {
+  if (err.message.includes("409")) {
+    console.error("409 Conflict: Dusra instance chal raha hai. Shutting down...");
+    process.exit(1);
+  }
+});
+
+process.on("SIGTERM", () => {
+  bot.stopPolling();
+  mongoose.connection.close();
+  process.exit(0);
+});
+
+process.on("SIGINT", () => {
+  bot.stopPolling();
+  mongoose.connection.close();
+  process.exit(0);
+});
