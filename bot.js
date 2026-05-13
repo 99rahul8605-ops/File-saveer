@@ -182,11 +182,12 @@ bot.on("message", async (msg) => {
   }
 });
 
-// Conflict aaye to process band karo — Render automatically restart karega
 bot.on("polling_error", (err) => {
   if (err.message.includes("409")) {
-    console.error("409 Conflict: Dusra instance chal raha hai. Shutting down...");
-    process.exit(1);
+    // Purana instance abhi chal raha hai — 10 sec baad retry karega polling khud
+    console.warn("409 Conflict: Purana instance band hone ka wait kar raha hoon...");
+  } else {
+    console.error("Polling error:", err.message);
   }
 });
 
