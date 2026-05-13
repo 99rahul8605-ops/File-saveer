@@ -1,249 +1,242 @@
 const TelegramBot = require("node-telegram-bot-api");
 const mongoose = require("mongoose");
-const { v4: uuidv4 } = require("uuid");
 const express = require("express");
 
 const TOKEN = process.env.BOT_TOKEN;
-const BASE_URL = process.env.BASE_URL; // e.g. https://yourapp.onrender.com
 const MONGO_URI = process.env.MONGO_URI;
 const PORT = process.env.PORT || 3000;
 
-if (!TOKEN || !BASE_URL || !MONGO_URI) {
-  console.error(
-    "❌ Missing env variables: BOT_TOKEN, BASE_URL, MONGO_URI are required."
-  );
+if (!TOKEN || !MONGO_URI) {
+  console.error("❌ Missing env variables: BOT_TOKEN aur MONGO_URI required hai.");
   process.exit(1);
 }
 
-// ─── MongoDB Setup ───────────────────────────────────────────────────────────
+// ─── MongoDB ──────────────────────────────────────────────────────────────────
 mongoose
   .connect(MONGO_URI)
   .then(() => console.log("✅ MongoDB connected"))
-  .catch((err) => {
-    console.error("❌ MongoDB connection error:", err.message);
-    process.exit(1);
-  });
+  .catch((err) => { console.error("❌ MongoDB error:", err.message); process.exit(1); });
 
 const fileSchema = new mongoose.Schema({
-  uuid: { type: String, required: true, unique: true, index: true },
+  code: { type: String, required: true, unique: true, index: true },
   file_id: { type: String, required: true },
-  file_type: { type: String, required: true }, // document, photo, video, audio, voice
+  file_type: { type: String, required: true },
   file_name: { type: String, default: "file" },
-  uploaded_by: { type: Number }, // Telegram user ID
+  uploaded_by: { type: Number },
   created_at: { type: Date, default: Date.now },
 });
 
 const FileRecord = mongoose.model("FileRecord", fileSchema);
 
-// ─── Express Health + Redirect Server ────────────────────────────────────────
+// ─── Health Server (Render ke liye) ──────────────────────────────────────────
 const app = express();
-
-// Health check endpoint for Render
 app.get("/health", (req, res) => {
   res.status(200).json({
     status: "ok",
     uptime: process.uptime(),
-    timestamp: new Date().toISOString(),
     mongo: mongoose.connection.readyState === 1 ? "connected" : "disconnected",
   });
 });
+app.listen(PORT, () => console.log(`✅ Health server on port ${PORT}`));
 
-// File redirect endpoint
-app.get("/file/:uuid", async (req, res) => {
-  const { uuid } = req.params;
-
-  try {
-    const record = await FileRecord.findOne({ uuid });
-
-    if (!record) {
-      return res.status(404).send(`
-        <html><body style="font-family:sans-serif;text-align:center;padding:50px">
-          <h2>❌ File Not Found</h2>
-          <p>This link is invalid or the file has been deleted.</p>
-        </body></html>
-      `);
-    }
-
-    // Get download URL from Telegram
-    const fileInfo = await bot.getFile(record.file_id);
-    const fileUrl = `https://api.telegram.org/file/bot${TOKEN}/${fileInfo.file_path}`;
-
-    // Redirect to the actual file
-    res.redirect(fileUrl);
-  } catch (err) {
-    console.error("Error fetching file:", err.message);
-    res.status(500).send(`
-      <html><body style="font-family:sans-serif;text-align:center;padding:50px">
-        <h2>⚠️ Error</h2>
-        <p>Could not retrieve the file. Please try again later.</p>
-      </body></html>
-    `);
+// ─── Short Code Generator (6 characters) ─────────────────────────────────────
+function generateCode() {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
+  let code = "";
+  for (let i = 0; i < 6; i++) {
+    code += chars[Math.floor(Math.random() * chars.length)];
   }
-});
+  return code;
+}
 
-app.listen(PORT, () => {
-  console.log(`✅ Express server running on port ${PORT}`);
-});
+async function getUniqueCode() {
+  let code, exists;
+  do {
+    code = generateCode();
+    exists = await FileRecord.findOne({ code });
+  } while (exists);
+  return code;
+}
 
-// ─── Telegram Bot Setup ───────────────────────────────────────────────────────
-const bot = new TelegramBot(TOKEN, { polling: true });
-console.log("✅ Telegram bot started (polling)");
-
-// ─── Helper: Extract File Info from Message ───────────────────────────────────
+// ─── File Type Extractor ──────────────────────────────────────────────────────
 function extractFileInfo(msg) {
-  if (msg.document) {
-    return {
-      file_id: msg.document.file_id,
-      file_type: "document",
-      file_name: msg.document.file_name || "document",
-    };
-  }
-  if (msg.photo) {
-    const photo = msg.photo[msg.photo.length - 1]; // highest res
-    return { file_id: photo.file_id, file_type: "photo", file_name: "photo.jpg" };
-  }
-  if (msg.video) {
-    return {
-      file_id: msg.video.file_id,
-      file_type: "video",
-      file_name: msg.video.file_name || "video.mp4",
-    };
-  }
-  if (msg.audio) {
-    return {
-      file_id: msg.audio.file_id,
-      file_type: "audio",
-      file_name: msg.audio.file_name || "audio.mp3",
-    };
-  }
-  if (msg.voice) {
-    return { file_id: msg.voice.file_id, file_type: "voice", file_name: "voice.ogg" };
-  }
-  if (msg.video_note) {
-    return {
-      file_id: msg.video_note.file_id,
-      file_type: "video_note",
-      file_name: "video_note.mp4",
-    };
-  }
-  if (msg.sticker) {
-    return {
-      file_id: msg.sticker.file_id,
-      file_type: "sticker",
-      file_name: "sticker.webp",
-    };
-  }
+  if (msg.document)   return { file_id: msg.document.file_id, file_type: "document", file_name: msg.document.file_name || "document" };
+  if (msg.photo)      return { file_id: msg.photo[msg.photo.length - 1].file_id, file_type: "photo", file_name: "photo.jpg" };
+  if (msg.video)      return { file_id: msg.video.file_id, file_type: "video", file_name: msg.video.file_name || "video.mp4" };
+  if (msg.audio)      return { file_id: msg.audio.file_id, file_type: "audio", file_name: msg.audio.file_name || "audio.mp3" };
+  if (msg.voice)      return { file_id: msg.voice.file_id, file_type: "voice", file_name: "voice.ogg" };
+  if (msg.video_note) return { file_id: msg.video_note.file_id, file_type: "video_note", file_name: "video_note.mp4" };
   return null;
 }
 
-// ─── /start Command ───────────────────────────────────────────────────────────
+// ─── File Send Helper ─────────────────────────────────────────────────────────
+async function sendFile(chatId, record) {
+  const caption = `📎 *${record.file_name}*\n🔑 Code: \`${record.code}\``;
+  switch (record.file_type) {
+    case "photo":      await bot.sendPhoto(chatId, record.file_id, { caption, parse_mode: "Markdown" }); break;
+    case "video":      await bot.sendVideo(chatId, record.file_id, { caption, parse_mode: "Markdown" }); break;
+    case "audio":      await bot.sendAudio(chatId, record.file_id, { caption, parse_mode: "Markdown" }); break;
+    case "voice":      await bot.sendVoice(chatId, record.file_id, { caption, parse_mode: "Markdown" }); break;
+    case "video_note": await bot.sendVideoNote(chatId, record.file_id); break;
+    default:           await bot.sendDocument(chatId, record.file_id, { caption, parse_mode: "Markdown" });
+  }
+}
+
+// ─── Bot ──────────────────────────────────────────────────────────────────────
+const bot = new TelegramBot(TOKEN, { polling: true });
+console.log("✅ Bot started!");
+
+// /start
 bot.onText(/\/start/, (msg) => {
-  const name = msg.from.first_name || "User";
-  bot.sendMessage(
-    msg.chat.id,
-    `👋 *Hello ${name}!*\n\n` +
-      `Mujhe koi bhi file bhejo aur main uske liye ek *shareable link* bana dunga! 🔗\n\n` +
-      `*Supported files:*\n` +
-      `📄 Documents\n📷 Photos\n🎬 Videos\n🎵 Audio\n🎤 Voice messages\n\n` +
-      `*Commands:*\n` +
-      `/start - Bot start karo\n` +
-      `/help - Help dekho`,
+  bot.sendMessage(msg.chat.id,
+    `👋 *Hello ${msg.from.first_name}!*\n\n` +
+    `Koi bhi file bhejo — main ek *6-digit code* dunga.\n` +
+    `Code use karke kabhi bhi woh file wapis paa sakte ho!\n\n` +
+    `📥 *File pane ke liye:*\n` +
+    `\`/get ABC123\`\n\n` +
+    `📋 *Apni saari files:*\n` +
+    `/myfiles`,
     { parse_mode: "Markdown" }
   );
 });
 
-// ─── /help Command ────────────────────────────────────────────────────────────
+// /help
 bot.onText(/\/help/, (msg) => {
-  bot.sendMessage(
-    msg.chat.id,
-    `📖 *How to use:*\n\n` +
-      `1️⃣ Mujhe koi bhi file bhejo\n` +
-      `2️⃣ Main ek unique link generate kar dunga\n` +
-      `3️⃣ Us link pe click karo — file seedha download ho jaayegi!\n\n` +
-      `⚠️ *Note:* Link tabhi kaam karega jab bot active ho.\n\n` +
-      `*Supported:* Documents, Photos, Videos, Audio, Voice`,
+  bot.sendMessage(msg.chat.id,
+    `📖 *Commands:*\n\n` +
+    `📤 File bhejo → code milega\n` +
+    `/get CODE — file retrieve karo\n` +
+    `/myfiles — apni saari files dekho\n` +
+    `/delete CODE — file delete karo`,
     { parse_mode: "Markdown" }
   );
 });
 
-// ─── File Handler ─────────────────────────────────────────────────────────────
-bot.on("message", async (msg) => {
-  // Ignore commands
-  if (msg.text && msg.text.startsWith("/")) return;
-
+// /get CODE
+bot.onText(/\/get (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
-  const userId = msg.from?.id;
+  const code = match[1].trim();
 
-  const fileInfo = extractFileInfo(msg);
-
-  if (!fileInfo) {
-    // Only reply if it's a text message (ignore other non-file messages)
-    if (msg.text) {
-      bot.sendMessage(
-        chatId,
-        `📂 *Koi file bhejo!*\n\nMain sirf files (documents, photos, videos, audio) ko links mein convert kar sakta hoon.`,
+  try {
+    const record = await FileRecord.findOne({ code: { $regex: new RegExp(`^${code}$`, "i") } });
+    if (!record) {
+      return bot.sendMessage(chatId,
+        `❌ Code \`${code}\` nahi mila!\nCheck karke dobara try karo.`,
         { parse_mode: "Markdown" }
       );
     }
-    return;
+    await sendFile(chatId, record);
+  } catch (err) {
+    console.error("Get error:", err.message);
+    bot.sendMessage(chatId, `⚠️ Error aaya. Dobara try karo.`);
   }
+});
 
-  // Send "processing" message
-  const processingMsg = await bot.sendMessage(
-    chatId,
-    `⏳ Processing your file...`,
-    { parse_mode: "Markdown" }
-  );
+// /myfiles
+bot.onText(/\/myfiles/, async (msg) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
 
   try {
-    // Generate unique UUID
-    const uuid = uuidv4();
+    const files = await FileRecord.find({ uploaded_by: userId }).sort({ created_at: -1 }).limit(20);
 
-    // Save to MongoDB
-    const record = new FileRecord({
-      uuid,
+    if (files.length === 0) {
+      return bot.sendMessage(chatId, `📂 Abhi tak koi file upload nahi ki.`);
+    }
+
+    const emoji = { document: "📄", photo: "🖼️", video: "🎬", audio: "🎵", voice: "🎤", video_note: "📹" };
+    let text = `📋 *Aapki Files (${files.length}):*\n\n`;
+    files.forEach((f) => {
+      const date = f.created_at.toLocaleDateString("en-IN");
+      text += `${emoji[f.file_type] || "📎"} \`${f.code}\` — ${f.file_name} _(${date})_\n`;
+    });
+    text += `\n💡 \`/get CODE\` bhejo file paane ke liye`;
+
+    bot.sendMessage(chatId, text, { parse_mode: "Markdown" });
+  } catch (err) {
+    bot.sendMessage(chatId, `⚠️ Error aaya. Dobara try karo.`);
+  }
+});
+
+// /delete CODE
+bot.onText(/\/delete (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const code = match[1].trim();
+
+  try {
+    const record = await FileRecord.findOneAndDelete({
+      code: { $regex: new RegExp(`^${code}$`, "i") },
+      uploaded_by: msg.from.id
+    });
+
+    if (!record) {
+      return bot.sendMessage(chatId, `❌ Code \`${code}\` nahi mila ya yeh aapki file nahi hai.`, { parse_mode: "Markdown" });
+    }
+    bot.sendMessage(chatId, `🗑️ File delete ho gayi! (\`${code}\`)`, { parse_mode: "Markdown" });
+  } catch (err) {
+    bot.sendMessage(chatId, `⚠️ Delete nahi hua. Dobara try karo.`);
+  }
+});
+
+// File receive → code generate
+bot.on("message", async (msg) => {
+  if (msg.text) return;
+
+  const chatId = msg.chat.id;
+  const fileInfo = extractFileInfo(msg);
+  if (!fileInfo) return;
+
+  const processing = await bot.sendMessage(chatId, `⏳ Saving...`);
+
+  try {
+    const code = await getUniqueCode();
+    await FileRecord.create({
+      code,
       file_id: fileInfo.file_id,
       file_type: fileInfo.file_type,
       file_name: fileInfo.file_name,
-      uploaded_by: userId,
+      uploaded_by: msg.from?.id,
     });
-    await record.save();
 
-    const link = `${BASE_URL}/file/${uuid}`;
+    await bot.deleteMessage(chatId, processing.message_id);
 
-    // Delete processing message
-    await bot.deleteMessage(chatId, processingMsg.message_id);
-
-    // Send the link
-    await bot.sendMessage(
-      chatId,
-      `✅ *File link ready hai!*\n\n` +
-        `📎 *File:* \`${fileInfo.file_name}\`\n` +
-        `🔗 *Link:*\n${link}\n\n` +
-        `👆 Is link pe click karo — file seedha download ho jaayegi!`,
+    await bot.sendMessage(chatId,
+      `✅ *File Save Ho Gayi!*\n\n` +
+      `📎 ${fileInfo.file_name}\n\n` +
+      `🔑 *Aapka Code:*\n` +
+      `\`\`\`\n${code}\n\`\`\`\n\n` +
+      `File paane ke liye:\n\`/get ${code}\``,
       {
         parse_mode: "Markdown",
         reply_markup: {
-          inline_keyboard: [
-            [{ text: "📥 Download File", url: link }],
-          ],
-        },
+          inline_keyboard: [[
+            { text: "📥 File Wapis Lo", callback_data: `get:${code}` }
+          ]]
+        }
       }
     );
   } catch (err) {
-    console.error("Error saving file:", err.message);
-    await bot.editMessageText(
-      `❌ File save karne mein error aaya. Please dobara try karo.`,
-      { chat_id: chatId, message_id: processingMsg.message_id }
-    );
+    console.error("Save error:", err.message);
+    bot.editMessageText(`❌ Save nahi hua. Dobara try karo.`, {
+      chat_id: chatId, message_id: processing.message_id
+    });
   }
 });
 
-// ─── Polling Error Handler ────────────────────────────────────────────────────
-bot.on("polling_error", (err) => {
-  console.error("Polling error:", err.message);
+// Inline button handler
+bot.on("callback_query", async (query) => {
+  const [action, code] = query.data.split(":");
+  if (action !== "get") return;
+
+  await bot.answerCallbackQuery(query.id, { text: "📥 File bhej raha hoon..." });
+
+  try {
+    const record = await FileRecord.findOne({ code });
+    if (!record) return bot.sendMessage(query.message.chat.id, `❌ File nahi mili.`);
+    await sendFile(query.message.chat.id, record);
+  } catch (err) {
+    bot.sendMessage(query.message.chat.id, `⚠️ Error aaya. \`/get ${code}\` try karo.`, { parse_mode: "Markdown" });
+  }
 });
 
-process.on("unhandledRejection", (reason) => {
-  console.error("Unhandled Rejection:", reason);
-});
+bot.on("polling_error", (err) => console.error("Polling error:", err.message));
