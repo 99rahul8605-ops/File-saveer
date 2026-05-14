@@ -16,6 +16,8 @@ mongoose
   .then(() => console.log("MongoDB connected"))
   .catch((err) => { console.error("MongoDB error:", err.message); process.exit(1); });
 
+// ─── Schemas ────────────────────────────────────────────────────────────────
+
 const fileSchema = new mongoose.Schema({
   code: { type: String, required: true, unique: true, index: true },
   file_id: { type: String, required: true },
@@ -26,7 +28,23 @@ const fileSchema = new mongoose.Schema({
 });
 const FileRecord = mongoose.model("FileRecord", fileSchema);
 
-// Health server
+// Bulk batch: ek user ke pending files store karta hai
+const bulkBatchSchema = new mongoose.Schema({
+  batch_code: { type: String, required: true, unique: true, index: true },
+  user_id: { type: Number, required: true },
+  files: [
+    {
+      file_id:   { type: String, required: true },
+      file_type: { type: String, required: true },
+      file_name: { type: String, default: "file" },
+    }
+  ],
+  created_at: { type: Date, default: Date.now },
+});
+const BulkBatch = mongoose.model("BulkBatch", bulkBatchSchema);
+
+// ─── Health server ───────────────────────────────────────────────────────────
+
 const app = express();
 app.get("/health", (req, res) => res.status(200).json({
   status: "ok",
@@ -35,25 +53,40 @@ app.get("/health", (req, res) => res.status(200).json({
 }));
 app.listen(PORT, () => console.log(`Health server on port ${PORT}`));
 
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
 function generateCode() {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
   let code = "";
   for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
   return code;
 }
+
 async function getUniqueCode() {
   let code, exists;
-  do { code = generateCode(); exists = await FileRecord.findOne({ code }); } while (exists);
+  do {
+    code = generateCode();
+    exists = await FileRecord.findOne({ code });
+  } while (exists);
+  return code;
+}
+
+async function getUniqueBatchCode() {
+  let code, exists;
+  do {
+    code = "B" + generateCode(); // Batch codes 'B' se start honge
+    exists = await BulkBatch.findOne({ batch_code: code });
+  } while (exists);
   return code;
 }
 
 function extractFileInfo(msg) {
-  if (msg.document)   return { file_id: msg.document.file_id, file_type: "document", file_name: msg.document.file_name || "document" };
+  if (msg.document)   return { file_id: msg.document.file_id,   file_type: "document",   file_name: msg.document.file_name || "document" };
   if (msg.photo)      return { file_id: msg.photo[msg.photo.length - 1].file_id, file_type: "photo", file_name: "photo.jpg" };
-  if (msg.video)      return { file_id: msg.video.file_id, file_type: "video", file_name: msg.video.file_name || "video.mp4" };
-  if (msg.audio)      return { file_id: msg.audio.file_id, file_type: "audio", file_name: msg.audio.file_name || "audio.mp3" };
-  if (msg.voice)      return { file_id: msg.voice.file_id, file_type: "voice", file_name: "voice.ogg" };
-  if (msg.video_note) return { file_id: msg.video_note.file_id, file_type: "video_note", file_name: "video_note.mp4" };
+  if (msg.video)      return { file_id: msg.video.file_id,       file_type: "video",      file_name: msg.video.file_name || "video.mp4" };
+  if (msg.audio)      return { file_id: msg.audio.file_id,       file_type: "audio",      file_name: msg.audio.file_name || "audio.mp3" };
+  if (msg.voice)      return { file_id: msg.voice.file_id,       file_type: "voice",      file_name: "voice.ogg" };
+  if (msg.video_note) return { file_id: msg.video_note.file_id,  file_type: "video_note", file_name: "video_note.mp4" };
   return null;
 }
 
@@ -69,6 +102,14 @@ async function sendFile(bot, chatId, record) {
   }
 }
 
+// ─── In-memory bulk session store ────────────────────────────────────────────
+// { userId: { files: [...], timer: timeoutRef } }
+const bulkSessions = new Map();
+
+const BULK_TIMEOUT_MS = 5 * 60 * 1000; // 5 min baad auto-cancel
+
+// ─── Bot startup ─────────────────────────────────────────────────────────────
+
 async function startBot() {
   console.log("Purani polling clear kar raha hoon...");
   await fetch(`https://api.telegram.org/bot${TOKEN}/getUpdates?offset=-1&timeout=0`);
@@ -78,16 +119,35 @@ async function startBot() {
   const BOT_USERNAME = me.username;
   console.log(`Bot started: @${BOT_USERNAME}`);
 
+  // ── /start ──────────────────────────────────────────────────────────────────
   bot.onText(/\/start(.*)/, async (msg, match) => {
     const chatId = msg.chat.id;
     const param = match[1].trim();
 
     if (param) {
+      // Bulk batch link?
+      if (param.startsWith("B")) {
+        try {
+          const batch = await BulkBatch.findOne({ batch_code: param });
+          if (!batch) return bot.sendMessage(chatId, `Batch nahi mili. Link galat ya delete ho gaya.`);
+          await bot.sendMessage(chatId, `📦 Batch mein ${batch.files.length} file(s) hain, bhej raha hoon...`);
+          for (const f of batch.files) {
+            await sendFile(bot, chatId, f);
+          }
+          return;
+        } catch (err) {
+          console.error("Batch deep link error:", err.message);
+          return bot.sendMessage(chatId, `Error aaya. Dobara try karo.`);
+        }
+      }
+
+      // Single file link
       try {
         const record = await FileRecord.findOne({ code: { $regex: new RegExp(`^${param}$`, "i") } });
         if (!record) return bot.sendMessage(chatId, `File nahi mili. Link galat ya delete ho gaya.`);
         await sendFile(bot, chatId, record);
       } catch (err) {
+        console.error("Deep link error:", err.message);
         bot.sendMessage(chatId, `Error aaya. Dobara try karo.`);
       }
       return;
@@ -95,55 +155,223 @@ async function startBot() {
 
     bot.sendMessage(chatId,
       `👋 Hello ${msg.from.first_name}!\n\n` +
-      `Koi bhi file bhejo — main ek link dunga.\n` +
-      `Link pe click karo — file seedha aa jaayegi!\n\n` +
-      `/myfiles — apni saari files dekho`
+      `🔹 Single file bhejo — seedha link milega.\n` +
+      `🔹 Bulk (multiple files) ke liye:\n` +
+      `   1️⃣ /bulk likhkar bulk mode shuru karo\n` +
+      `   2️⃣ Ek ek karke saari files bhejo\n` +
+      `   3️⃣ /done likhne pe ek single link milega\n\n` +
+      `/myfiles — apni saari files dekho\n` +
+      `/cancel — bulk mode band karo`
     );
   });
 
+  // ── /bulk — bulk mode shuru karo ────────────────────────────────────────────
+  bot.onText(/\/bulk/, async (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from.id;
+
+    if (bulkSessions.has(userId)) {
+      return bot.sendMessage(chatId,
+        `⚠️ Bulk mode pehle se active hai!\n` +
+        `Files bhejo ya /done se complete karo.\n` +
+        `Cancel karna ho to /cancel bhejo.`
+      );
+    }
+
+    // Naya session
+    const timer = setTimeout(async () => {
+      if (bulkSessions.has(userId)) {
+        bulkSessions.delete(userId);
+        try {
+          await bot.sendMessage(chatId,
+            `⏰ Bulk session timeout ho gaya (5 min). Dobara /bulk se shuru karo.`
+          );
+        } catch (_) {}
+      }
+    }, BULK_TIMEOUT_MS);
+
+    bulkSessions.set(userId, { files: [], chatId, timer });
+
+    bot.sendMessage(chatId,
+      `📦 Bulk mode ON!\n\n` +
+      `Ab saari files ek ek karke bhejo.\n` +
+      `Sab files bhejne ke baad /done likho — ek single link milega!\n\n` +
+      `❌ Cancel: /cancel`
+    );
+  });
+
+  // ── /done — batch finalize karo ─────────────────────────────────────────────
+  bot.onText(/\/done/, async (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from.id;
+
+    const session = bulkSessions.get(userId);
+    if (!session) {
+      return bot.sendMessage(chatId,
+        `Koi active bulk session nahi hai. Pehle /bulk se shuru karo.`
+      );
+    }
+
+    if (session.files.length === 0) {
+      return bot.sendMessage(chatId,
+        `⚠️ Koi file nahi bheji abhi tak! Pehle files bhejo, phir /done karo.`
+      );
+    }
+
+    // Timer clear karo
+    clearTimeout(session.timer);
+    bulkSessions.delete(userId);
+
+    const processing = await bot.sendMessage(chatId, `⏳ Batch save ho rahi hai...`);
+
+    try {
+      const batchCode = await getUniqueBatchCode();
+      await BulkBatch.create({
+        batch_code: batchCode,
+        user_id: userId,
+        files: session.files,
+      });
+
+      const link = `https://t.me/${BOT_USERNAME}?start=${batchCode}`;
+      await bot.deleteMessage(chatId, processing.message_id);
+
+      const fileList = session.files
+        .map((f, i) => `${i + 1}. ${f.file_name}`)
+        .join("\n");
+
+      await bot.sendMessage(chatId,
+        `✅ Batch ready! ${session.files.length} files save ho gayi.\n\n` +
+        `📋 Files:\n${fileList}\n\n` +
+        `Link share karo — saari files ek saath milegi:`,
+        {
+          reply_markup: {
+            inline_keyboard: [[{ text: "📥 Saari Files Lo", url: link }]]
+          }
+        }
+      );
+      await bot.sendMessage(chatId, link, { disable_web_page_preview: true });
+
+    } catch (err) {
+      console.error("Batch save error:", err.message);
+      try {
+        await bot.editMessageText(`Batch save nahi hui. Dobara try karo.`, {
+          chat_id: chatId, message_id: processing.message_id
+        });
+      } catch (_) {
+        bot.sendMessage(chatId, `Batch save nahi hui. Dobara try karo.`);
+      }
+    }
+  });
+
+  // ── /cancel — bulk session band karo ────────────────────────────────────────
+  bot.onText(/\/cancel/, async (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from.id;
+
+    const session = bulkSessions.get(userId);
+    if (!session) {
+      return bot.sendMessage(chatId, `Koi active bulk session nahi hai.`);
+    }
+
+    clearTimeout(session.timer);
+    bulkSessions.delete(userId);
+    bot.sendMessage(chatId,
+      `❌ Bulk session cancel ho gaya. ${session.files.length > 0 ? `(${session.files.length} files discard ho gayi)` : ""}`
+    );
+  });
+
+  // ── /myfiles ─────────────────────────────────────────────────────────────────
   bot.onText(/\/myfiles/, async (msg) => {
     const chatId = msg.chat.id;
     try {
       const files = await FileRecord.find({ uploaded_by: msg.from.id }).sort({ created_at: -1 }).limit(20);
-      if (files.length === 0) return bot.sendMessage(chatId, `Abhi tak koi file upload nahi ki.`);
+      const batches = await BulkBatch.find({ user_id: msg.from.id }).sort({ created_at: -1 }).limit(10);
+
+      if (files.length === 0 && batches.length === 0) {
+        return bot.sendMessage(chatId, `Abhi tak koi file ya batch upload nahi ki.`);
+      }
+
       const emoji = { document: "📄", photo: "🖼️", video: "🎬", audio: "🎵", voice: "🎤", video_note: "📹" };
-      let text = `Aapki Files (${files.length}):\n\n`;
-      files.forEach((f) => {
-        text += `${emoji[f.file_type] || "📎"} ${f.file_name}\nhttps://t.me/${BOT_USERNAME}?start=${f.code}\n\n`;
-      });
+      let text = "";
+
+      if (files.length > 0) {
+        text += `📁 Single Files (${files.length}):\n\n`;
+        files.forEach((f) => {
+          text += `${emoji[f.file_type] || "📎"} ${f.file_name}\nhttps://t.me/${BOT_USERNAME}?start=${f.code}\n\n`;
+        });
+      }
+
+      if (batches.length > 0) {
+        text += `📦 Bulk Batches (${batches.length}):\n\n`;
+        batches.forEach((b) => {
+          text += `🗂️ Batch (${b.files.length} files) — ${b.created_at.toLocaleDateString("en-IN")}\nhttps://t.me/${BOT_USERNAME}?start=${b.batch_code}\n\n`;
+        });
+      }
+
       bot.sendMessage(chatId, text, { disable_web_page_preview: true });
     } catch (err) {
       bot.sendMessage(chatId, `Error aaya. Dobara try karo.`);
     }
   });
 
+  // ── /delete ──────────────────────────────────────────────────────────────────
   bot.onText(/\/delete (.+)/, async (msg, match) => {
     const chatId = msg.chat.id;
     const code = match[1].trim();
     try {
+      // Single file check
       const record = await FileRecord.findOneAndDelete({
         code: { $regex: new RegExp(`^${code}$`, "i") },
         uploaded_by: msg.from.id
       });
-      if (!record) return bot.sendMessage(chatId, `Code nahi mila ya yeh aapki file nahi hai.`);
-      bot.sendMessage(chatId, `File delete ho gayi!`);
+      if (record) return bot.sendMessage(chatId, `✅ File delete ho gayi!`);
+
+      // Batch check
+      const batch = await BulkBatch.findOneAndDelete({
+        batch_code: { $regex: new RegExp(`^${code}$`, "i") },
+        user_id: msg.from.id
+      });
+      if (batch) return bot.sendMessage(chatId, `✅ Batch delete ho gayi! (${batch.files.length} files)`);
+
+      bot.sendMessage(chatId, `Code nahi mila ya yeh aapka nahi hai.`);
     } catch (err) {
       bot.sendMessage(chatId, `Delete nahi hua. Dobara try karo.`);
     }
   });
 
+  // ── Message handler (file receive) ──────────────────────────────────────────
   bot.on("message", async (msg) => {
-    if (msg.text) return;
+    if (msg.text) return; // Text messages ignore (commands upar handle hote hain)
+
     const chatId = msg.chat.id;
+    const userId = msg.from?.id;
     const fileInfo = extractFileInfo(msg);
     if (!fileInfo) return;
 
+    // ── Bulk session active hai? ─────────────────────────────────────────────
+    const session = bulkSessions.get(userId);
+    if (session) {
+      session.files.push(fileInfo);
+      const count = session.files.length;
+      await bot.sendMessage(chatId,
+        `✅ File ${count} add ho gayi: ${fileInfo.file_name}\n` +
+        `📦 Total: ${count} file(s)\n\n` +
+        `Aur files bhejo ya /done likhke link lo.`,
+        { reply_to_message_id: msg.message_id }
+      );
+      return;
+    }
+
+    // ── Normal single file upload ────────────────────────────────────────────
     const processing = await bot.sendMessage(chatId, `⏳ Saving...`);
     try {
       const code = await getUniqueCode();
       await FileRecord.create({
-        code, file_id: fileInfo.file_id, file_type: fileInfo.file_type,
-        file_name: fileInfo.file_name, uploaded_by: msg.from?.id,
+        code,
+        file_id: fileInfo.file_id,
+        file_type: fileInfo.file_type,
+        file_name: fileInfo.file_name,
+        uploaded_by: userId,
       });
 
       const link = `https://t.me/${BOT_USERNAME}?start=${code}`;
@@ -153,6 +381,7 @@ async function startBot() {
         { reply_markup: { inline_keyboard: [[{ text: "📥 File Lo", url: link }]] } }
       );
       await bot.sendMessage(chatId, link, { disable_web_page_preview: true });
+
     } catch (err) {
       console.error("Save error:", err.message);
       try {
@@ -165,7 +394,9 @@ async function startBot() {
     }
   });
 
+  // ── Polling error ────────────────────────────────────────────────────────────
   bot.on("polling_error", (err) => console.error("Polling error:", err.message));
+
   process.on("SIGTERM", () => { bot.stopPolling(); mongoose.connection.close(); process.exit(0); });
   process.on("SIGINT",  () => { bot.stopPolling(); mongoose.connection.close(); process.exit(0); });
 }
