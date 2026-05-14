@@ -1,16 +1,12 @@
 {
-  "name": "telegram-file-bot",
-  "version": "2.0.0",
-  "main": "bot.js",
-  "scripts": {
-    "start": "node bot.js"
-  },
+  "name": "file-store-bot",
+  "version": "1.0.0",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
   "dependencies": {
     "express": "^4.18.2",
     "mongoose": "^8.2.0",
     "node-telegram-bot-api": "^0.64.0"
   },
-  "engines": {
-    "node": ">=18.0.0"
-  }
+  "engines": { "node": ">=18.0.0" }
 }
