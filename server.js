@@ -110,11 +110,45 @@ const BULK_TIMEOUT_MS = 5 * 60 * 1000; // 5 min baad auto-cancel
 
 // ─── Bot startup ─────────────────────────────────────────────────────────────
 
-async function startBot() {
-  console.log("Purani polling clear kar raha hoon...");
-  await fetch(`https://api.telegram.org/bot${TOKEN}/getUpdates?offset=-1&timeout=0`);
+async function wait(ms) {
+  return new Promise((res) => setTimeout(res, ms));
+}
 
-  const bot = new TelegramBot(TOKEN, { polling: true });
+async function startBot() {
+  // Purani polling clear karo — agar fail ho to ignore karo
+  try {
+    console.log("Purani polling clear kar raha hoon...");
+    const res = await fetch(
+      `https://api.telegram.org/bot${TOKEN}/getUpdates?offset=-1&timeout=0`,
+      { signal: AbortSignal.timeout(10000) }
+    );
+    if (!res.ok) console.warn("getUpdates response:", res.status);
+  } catch (err) {
+    console.warn("getUpdates skip (network issue):", err.message);
+    // Fatal nahi — aage badhte hain
+  }
+
+  // Bot banao — retry logic ke saath
+  let bot;
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    try {
+      bot = new TelegramBot(TOKEN, {
+        polling: {
+          interval: 2000,
+          autoStart: false,
+          params: { timeout: 30 },
+        },
+      });
+      await bot.getMe(); // Connection test
+      break;
+    } catch (err) {
+      console.error(`Bot init attempt ${attempt} failed: ${err.message}`);
+      if (attempt === 5) throw err;
+      await wait(5000 * attempt); // 5s, 10s, 15s...
+    }
+  }
+
+  bot.startPolling();
   const me = await bot.getMe();
   const BOT_USERNAME = me.username;
   console.log(`Bot started: @${BOT_USERNAME}`);
@@ -339,9 +373,83 @@ async function startBot() {
     }
   });
 
+  // ── Telegram message link se file save karo ─────────────────────────────────
+  // Supported: https://t.me/username/123  ya  https://t.me/c/1234567890/123
+  const TG_LINK_RE = /https?:\/\/t\.me\/(c\/(\d+)|([a-zA-Z][a-zA-Z0-9_]{3,}))\/(\d+)/;
+
+  bot.onText(TG_LINK_RE, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from?.id;
+
+    const isPrivate  = !!match[2];
+    const rawId      = match[2];
+    const username   = match[3];
+    const messageId  = parseInt(match[4], 10);
+
+    let fromChatId = isPrivate ? parseInt(`-100${rawId}`, 10) : `@${username}`;
+
+    const processing = await bot.sendMessage(chatId, `⏳ Link se file fetch kar raha hoon...`);
+
+    try {
+      const forwarded = await bot.forwardMessage(chatId, fromChatId, messageId);
+      const fileInfo  = extractFileInfo(forwarded);
+
+      if (!fileInfo) {
+        await bot.deleteMessage(chatId, forwarded.message_id).catch(() => {});
+        return bot.editMessageText(
+          `⚠️ Is message mein koi file nahi mili.\n(sirf document, photo, video, audio save hoti hai)`,
+          { chat_id: chatId, message_id: processing.message_id }
+        );
+      }
+
+      await bot.deleteMessage(chatId, forwarded.message_id).catch(() => {});
+
+      // Bulk session active hai?
+      const session = bulkSessions.get(userId);
+      if (session) {
+        session.files.push(fileInfo);
+        const count = session.files.length;
+        return bot.editMessageText(
+          `✅ File ${count} bulk mein add ho gayi: ${fileInfo.file_name}\n` +
+          `📦 Total: ${count} file(s)\n\nAur links/files bhejo ya /done likhke link lo.`,
+          { chat_id: chatId, message_id: processing.message_id }
+        );
+      }
+
+      // Normal single save
+      const code = await getUniqueCode();
+      await FileRecord.create({
+        code, file_id: fileInfo.file_id, file_type: fileInfo.file_type,
+        file_name: fileInfo.file_name, uploaded_by: userId,
+      });
+      const link = `https://t.me/${BOT_USERNAME}?start=${code}`;
+      await bot.deleteMessage(chatId, processing.message_id);
+      await bot.sendMessage(chatId,
+        `✅ ${fileInfo.file_name}\n\nLink pe click karo — file aa jaayegi:`,
+        { reply_markup: { inline_keyboard: [[{ text: "📥 File Lo", url: link }]] } }
+      );
+      await bot.sendMessage(chatId, link, { disable_web_page_preview: true });
+
+    } catch (err) {
+      console.error("Link fetch error:", err.message);
+      const errText =
+        err.message.includes("chat not found") || err.message.includes("CHAT_ADMIN_REQUIRED")
+          ? `❌ Bot us group/channel ka member nahi hai.\nPehle bot ko wahan add karo.`
+        : err.message.includes("MESSAGE_ID_INVALID") || err.message.includes("not found")
+          ? `❌ Message nahi mila. Link sahi hai?`
+        : err.message.includes("PEER_ID_INVALID")
+          ? `❌ Is group/channel tak access nahi.\nBot ko wahan member banao.`
+        : `❌ Error: ${err.message}`;
+      try {
+        await bot.editMessageText(errText, { chat_id: chatId, message_id: processing.message_id });
+      } catch (_) { bot.sendMessage(chatId, errText); }
+    }
+  });
+
   // ── Message handler (file receive) ──────────────────────────────────────────
   bot.on("message", async (msg) => {
-    if (msg.text) return; // Text messages ignore (commands upar handle hote hain)
+    if (msg.text && TG_LINK_RE.test(msg.text)) return; // Link wala upar handle hua
+    if (msg.text) return; // Baaki text ignore
 
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
