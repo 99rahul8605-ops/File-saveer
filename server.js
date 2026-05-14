@@ -81,25 +81,14 @@ async function getUniqueBatchCode() {
 }
 
 function extractFileInfo(msg) {
-  if (msg.document)   return { file_id: msg.document.file_id,   file_type: "document",   file_name: msg.document.file_name || "document" };
-  if (msg.photo)      return { file_id: msg.photo[msg.photo.length - 1].file_id, file_type: "photo", file_name: "photo.jpg" };
-  if (msg.video)      return { file_id: msg.video.file_id,       file_type: "video",      file_name: msg.video.file_name || "video.mp4" };
-  if (msg.audio)      return { file_id: msg.audio.file_id,       file_type: "audio",      file_name: msg.audio.file_name || "audio.mp3" };
-  if (msg.voice)      return { file_id: msg.voice.file_id,       file_type: "voice",      file_name: "voice.ogg" };
-  if (msg.video_note) return { file_id: msg.video_note.file_id,  file_type: "video_note", file_name: "video_note.mp4" };
+  // Sirf video allowed hai
+  if (msg.video)      return { file_id: msg.video.file_id, file_type: "video", file_name: msg.video.file_name || "video.mp4" };
   return null;
 }
 
 async function sendFile(bot, chatId, record) {
   const caption = `📎 ${record.file_name}`;
-  switch (record.file_type) {
-    case "photo":      await bot.sendPhoto(chatId, record.file_id, { caption }); break;
-    case "video":      await bot.sendVideo(chatId, record.file_id, { caption }); break;
-    case "audio":      await bot.sendAudio(chatId, record.file_id, { caption }); break;
-    case "voice":      await bot.sendVoice(chatId, record.file_id, { caption }); break;
-    case "video_note": await bot.sendVideoNote(chatId, record.file_id); break;
-    default:           await bot.sendDocument(chatId, record.file_id, { caption });
-  }
+  await bot.sendVideo(chatId, record.file_id, { caption });
 }
 
 // ─── In-memory bulk session store ────────────────────────────────────────────
@@ -189,13 +178,13 @@ async function startBot() {
 
     bot.sendMessage(chatId,
       `👋 Hello ${msg.from.first_name}!\n\n` +
-      `🔹 Single file bhejo — seedha link milega.\n` +
-      `🔹 Bulk (multiple files) ke liye:\n` +
-      `   1️⃣ /bulk likhkar bulk mode shuru karo\n` +
-      `   2️⃣ Ek ek karke saari files bhejo\n` +
-      `   3️⃣ /done likhne pe ek single link milega\n\n` +
-      `/myfiles — apni saari files dekho\n` +
-      `/cancel — bulk mode band karo`
+      `🎬 Send a video — you will get a link.\n` +
+      `📦 For bulk videos:\n` +
+      `   1️⃣ Type /bulk to start bulk mode\n` +
+      `   2️⃣ Send videos one by one\n` +
+      `   3️⃣ Type /done to get a single link\n\n` +
+      `/myfiles — view your saved videos\n` +
+      `/cancel — cancel bulk mode`
     );
   });
 
