@@ -24,8 +24,11 @@ const fileSchema = new mongoose.Schema({
   file_type: { type: String, required: true },
   file_name: { type: String, default: "file" },
   uploaded_by: { type: Number },
+  expires_at: { type: Date, default: null }, // only video ke liye set hoga
   created_at: { type: Date, default: Date.now },
 });
+// TTL index — expires_at set ho to auto delete
+fileSchema.index({ expires_at: 1 }, { expireAfterSeconds: 0, partialFilterExpression: { expires_at: { $type: "date" } } });
 const FileRecord = mongoose.model("FileRecord", fileSchema);
 
 // Bulk batch: ek user ke pending files store karta hai
@@ -418,14 +421,18 @@ async function startBot() {
 
       // Normal single save
       const code = await getUniqueCode();
+      const isVideo = fileInfo.file_type === "video" || fileInfo.file_type === "video_note";
+      const expiresAt = isVideo ? new Date(Date.now() + 24 * 60 * 60 * 1000) : null;
       await FileRecord.create({
         code, file_id: fileInfo.file_id, file_type: fileInfo.file_type,
-        file_name: fileInfo.file_name, uploaded_by: userId,
+        file_name: fileInfo.file_name, uploaded_by: userId, expires_at: expiresAt,
       });
       const link = `https://t.me/${BOT_USERNAME}?start=${code}`;
       await bot.deleteMessage(chatId, processing.message_id);
-      await bot.sendMessage(chatId,
-        `✅ ${fileInfo.file_name}\n\nLink pe click karo — file aa jaayegi:`,
+      const caption = isVideo
+        ? `✅ ${fileInfo.file_name}\n\n⚠️ This video link will expire in 24 hours.\n\nClick the button to get the file:`
+        : `✅ ${fileInfo.file_name}\n\nLink pe click karo — file aa jaayegi:`;
+      await bot.sendMessage(chatId, caption,
         { reply_markup: { inline_keyboard: [[{ text: "📥 File Lo", url: link }]] } }
       );
       await bot.sendMessage(chatId, link, { disable_web_page_preview: true });
@@ -474,18 +481,23 @@ async function startBot() {
     const processing = await bot.sendMessage(chatId, `⏳ Saving...`);
     try {
       const code = await getUniqueCode();
+      const isVideo = fileInfo.file_type === "video" || fileInfo.file_type === "video_note";
+      const expiresAt = isVideo ? new Date(Date.now() + 24 * 60 * 60 * 1000) : null;
       await FileRecord.create({
         code,
         file_id: fileInfo.file_id,
         file_type: fileInfo.file_type,
         file_name: fileInfo.file_name,
         uploaded_by: userId,
+        expires_at: expiresAt,
       });
 
       const link = `https://t.me/${BOT_USERNAME}?start=${code}`;
       await bot.deleteMessage(chatId, processing.message_id);
-      await bot.sendMessage(chatId,
-        `✅ ${fileInfo.file_name}\n\nLink pe click karo — file aa jaayegi:`,
+      const caption = isVideo
+        ? `✅ ${fileInfo.file_name}\n\n⚠️ This video link will expire in 24 hours.\n\nClick the button to get the file:`
+        : `✅ ${fileInfo.file_name}\n\nLink pe click karo — file aa jaayegi:`;
+      await bot.sendMessage(chatId, caption,
         { reply_markup: { inline_keyboard: [[{ text: "📥 File Lo", url: link }]] } }
       );
       await bot.sendMessage(chatId, link, { disable_web_page_preview: true });
