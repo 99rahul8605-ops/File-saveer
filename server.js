@@ -4,12 +4,15 @@ const express = require("express");
 
 const TOKEN = process.env.BOT_TOKEN;
 const MONGO_URI = process.env.MONGO_URI;
+const ADMIN_ID = parseInt(process.env.ADMIN_ID || "0"); // Telegram user ID
 const PORT = process.env.PORT || 3000;
 
-if (!TOKEN || !MONGO_URI) {
-  console.error("Missing env: BOT_TOKEN aur MONGO_URI required hai.");
+if (!TOKEN || !MONGO_URI || !ADMIN_ID) {
+  console.error("Missing env: BOT_TOKEN, MONGO_URI, ADMIN_ID required hai.");
   process.exit(1);
 }
+
+function isAdmin(userId) { return userId === ADMIN_ID; }
 
 mongoose
   .connect(MONGO_URI)
@@ -159,6 +162,7 @@ async function startBot() {
   // ── /start ──────────────────────────────────────────────────────────────────
   bot.onText(/\/start(.*)/, async (msg, match) => {
     const chatId = msg.chat.id;
+    const userId = msg.from?.id;
     const param = match[1].trim();
 
     if (param) {
@@ -166,46 +170,50 @@ async function startBot() {
       if (param.startsWith("B")) {
         try {
           const batch = await BulkBatch.findOne({ batch_code: param });
-          if (!batch) return bot.sendMessage(chatId, `Batch nahi mili. Link galat ya delete ho gaya.`);
-          await bot.sendMessage(chatId, `📦 Batch mein ${batch.files.length} file(s) hain, bhej raha hoon...`);
+          if (!batch) return bot.sendMessage(chatId, `File not found. Link may be invalid or expired.`);
           for (const f of batch.files) {
             await sendFile(bot, chatId, f);
           }
           return;
         } catch (err) {
           console.error("Batch deep link error:", err.message);
-          return bot.sendMessage(chatId, `Error aaya. Dobara try karo.`);
+          return bot.sendMessage(chatId, `Error occurred. Please try again.`);
         }
       }
 
       // Single file link
       try {
         const record = await FileRecord.findOne({ code: { $regex: new RegExp(`^${param}$`, "i") } });
-        if (!record) return bot.sendMessage(chatId, `File nahi mili. Link galat ya delete ho gaya.`);
+        if (!record) return bot.sendMessage(chatId, `File not found. Link may be invalid or expired.`);
         await sendFile(bot, chatId, record);
       } catch (err) {
         console.error("Deep link error:", err.message);
-        bot.sendMessage(chatId, `Error aaya. Dobara try karo.`);
+        bot.sendMessage(chatId, `Error occurred. Please try again.`);
       }
       return;
     }
 
-    bot.sendMessage(chatId,
-      `👋 Hello ${msg.from.first_name}!\n\n` +
-      `🎬 Send a video — you will get a link.\n` +
-      `📦 For bulk videos:\n` +
-      `   1️⃣ Type /bulk to start bulk mode\n` +
-      `   2️⃣ Send videos one by one\n` +
-      `   3️⃣ Type /done to get a single link\n\n` +
-      `/myfiles — view your saved videos\n` +
-      `/cancel — cancel bulk mode`
-    );
+    // No param — sirf admin ko welcome, baaki ko kuch nahi
+    if (isAdmin(userId)) {
+      bot.sendMessage(chatId,
+        `👋 Hello Admin!\n\n` +
+        `🎬 Send a file — you will get a link.\n` +
+        `📦 For bulk files:\n` +
+        `   1️⃣ Type /bulk to start bulk mode\n` +
+        `   2️⃣ Send files one by one\n` +
+        `   3️⃣ Type /done to get a single link\n\n` +
+        `/myfiles — view saved files\n` +
+        `/cancel — cancel bulk mode`
+      );
+    }
+    // Non-admin ko kuch nahi
   });
 
   // ── /bulk — bulk mode shuru karo ────────────────────────────────────────────
   bot.onText(/\/bulk/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from.id;
+    if (!isAdmin(userId)) return; // Non-admin ignore
 
     if (bulkSessions.has(userId)) {
       return bot.sendMessage(chatId,
@@ -241,6 +249,7 @@ async function startBot() {
   bot.onText(/\/done/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from.id;
+    if (!isAdmin(userId)) return;
 
     const session = bulkSessions.get(userId);
     if (!session) {
@@ -304,6 +313,7 @@ async function startBot() {
   bot.onText(/\/cancel/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from.id;
+    if (!isAdmin(userId)) return;
 
     const session = bulkSessions.get(userId);
     if (!session) {
@@ -320,6 +330,7 @@ async function startBot() {
   // ── /myfiles ─────────────────────────────────────────────────────────────────
   bot.onText(/\/myfiles/, async (msg) => {
     const chatId = msg.chat.id;
+    if (!isAdmin(msg.from.id)) return;
     try {
       const files = await FileRecord.find({ uploaded_by: msg.from.id }).sort({ created_at: -1 }).limit(20);
       const batches = await BulkBatch.find({ user_id: msg.from.id }).sort({ created_at: -1 }).limit(10);
@@ -354,6 +365,7 @@ async function startBot() {
   // ── /delete ──────────────────────────────────────────────────────────────────
   bot.onText(/\/delete (.+)/, async (msg, match) => {
     const chatId = msg.chat.id;
+    if (!isAdmin(msg.from.id)) return;
     const code = match[1].trim();
     try {
       // Single file check
@@ -383,6 +395,7 @@ async function startBot() {
   bot.onText(TG_LINK_RE, async (msg, match) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
+    if (!isAdmin(userId)) return;
 
     const isPrivate  = !!match[2];
     const rawId      = match[2];
@@ -455,8 +468,9 @@ async function startBot() {
 
   // ── Message handler (file receive) ──────────────────────────────────────────
   bot.on("message", async (msg) => {
-    if (msg.text && TG_LINK_RE.test(msg.text)) return; // Link wala upar handle hua
-    if (msg.text) return; // Baaki text ignore
+    if (msg.text && TG_LINK_RE.test(msg.text)) return;
+    if (msg.text) return;
+    if (!isAdmin(msg.from?.id)) return; // Non-admin ki files ignore
 
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
