@@ -81,14 +81,25 @@ async function getUniqueBatchCode() {
 }
 
 function extractFileInfo(msg) {
-  // Sirf video allowed hai
-  if (msg.video)      return { file_id: msg.video.file_id, file_type: "video", file_name: msg.video.file_name || "video.mp4" };
+  if (msg.document)   return { file_id: msg.document.file_id,  file_type: "document",   file_name: msg.document.file_name || "document" };
+  if (msg.photo)      return { file_id: msg.photo[msg.photo.length-1].file_id, file_type: "photo", file_name: "photo.jpg" };
+  if (msg.video)      return { file_id: msg.video.file_id,      file_type: "video",      file_name: msg.video.file_name || "video.mp4" };
+  if (msg.audio)      return { file_id: msg.audio.file_id,      file_type: "audio",      file_name: msg.audio.file_name || "audio.mp3" };
+  if (msg.voice)      return { file_id: msg.voice.file_id,      file_type: "voice",      file_name: "voice.ogg" };
+  if (msg.video_note) return { file_id: msg.video_note.file_id, file_type: "video_note", file_name: "video_note.mp4" };
   return null;
 }
 
 async function sendFile(bot, chatId, record) {
   const caption = `📎 ${record.file_name}`;
-  await bot.sendVideo(chatId, record.file_id, { caption });
+  switch (record.file_type) {
+    case "photo":      await bot.sendPhoto(chatId, record.file_id, { caption }); break;
+    case "video":      await bot.sendVideo(chatId, record.file_id, { caption, protect_content: true }); break;
+    case "audio":      await bot.sendAudio(chatId, record.file_id, { caption }); break;
+    case "voice":      await bot.sendVoice(chatId, record.file_id, { caption }); break;
+    case "video_note": await bot.sendVideoNote(chatId, record.file_id, { protect_content: true }); break;
+    default:           await bot.sendDocument(chatId, record.file_id, { caption });
+  }
 }
 
 // ─── In-memory bulk session store ────────────────────────────────────────────
