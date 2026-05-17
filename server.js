@@ -27,7 +27,8 @@ const fileSchema = new mongoose.Schema({
   file_type: { type: String, required: true },
   file_name: { type: String, default: "file" },
   uploaded_by: { type: Number },
-  expires_at: { type: Date, default: null }, // only video ke liye set hoga
+  expires_at: { type: Date, default: null },
+  delivered_to: [{ type: Number }], // chat_ids jo already receive kar chuke hain (within 24hr)
   created_at: { type: Date, default: Date.now },
 });
 // TTL index — expires_at set ho to auto delete
@@ -48,6 +49,14 @@ const bulkBatchSchema = new mongoose.Schema({
   created_at: { type: Date, default: Date.now },
 });
 const BulkBatch = mongoose.model("BulkBatch", bulkBatchSchema);
+
+// Pending DM deletes — server restart pe bhi recover hoga
+const pendingDeleteSchema = new mongoose.Schema({
+  chat_id:    { type: Number, required: true },
+  message_id: { type: Number, required: true },
+  delete_at:  { type: Date,   required: true },
+});
+const PendingDelete = mongoose.model("PendingDelete", pendingDeleteSchema);
 
 // ─── Health server ───────────────────────────────────────────────────────────
 
@@ -99,12 +108,12 @@ function extractFileInfo(msg) {
 async function sendFile(bot, chatId, record) {
   const caption = `📎 ${record.file_name}`;
   switch (record.file_type) {
-    case "photo":      await bot.sendPhoto(chatId, record.file_id, { caption }); break;
-    case "video":      await bot.sendVideo(chatId, record.file_id, { caption, protect_content: true }); break;
-    case "audio":      await bot.sendAudio(chatId, record.file_id, { caption }); break;
-    case "voice":      await bot.sendVoice(chatId, record.file_id, { caption }); break;
-    case "video_note": await bot.sendVideoNote(chatId, record.file_id, { protect_content: true }); break;
-    default:           await bot.sendDocument(chatId, record.file_id, { caption });
+    case "photo":      return await bot.sendPhoto(chatId, record.file_id, { caption });
+    case "video":      return await bot.sendVideo(chatId, record.file_id, { caption, protect_content: true });
+    case "audio":      return await bot.sendAudio(chatId, record.file_id, { caption });
+    case "voice":      return await bot.sendVoice(chatId, record.file_id, { caption });
+    case "video_note": return await bot.sendVideoNote(chatId, record.file_id, { protect_content: true });
+    default:           return await bot.sendDocument(chatId, record.file_id, { caption });
   }
 }
 
@@ -118,6 +127,40 @@ const BULK_TIMEOUT_MS = 5 * 60 * 1000; // 5 min baad auto-cancel
 
 async function wait(ms) {
   return new Promise((res) => setTimeout(res, ms));
+}
+
+// DM delete schedule karo — DB mein save + setTimeout
+async function scheduleDelete(bot, chatId, messageId, deleteAt) {
+  await PendingDelete.create({ chat_id: chatId, message_id: messageId, delete_at: deleteAt });
+  const delay = Math.max(0, deleteAt - Date.now());
+  setTimeout(async () => {
+    try {
+      await bot.deleteMessage(chatId, messageId);
+      await PendingDelete.deleteOne({ chat_id: chatId, message_id: messageId });
+    } catch (err) {
+      console.error("Auto DM delete error:", err.message);
+      await PendingDelete.deleteOne({ chat_id: chatId, message_id: messageId }).catch(() => {});
+    }
+  }, delay);
+}
+
+// Server start pe pending deletes recover karo
+async function recoverPendingDeletes(bot) {
+  const pending = await PendingDelete.find({});
+  console.log(`Recovering ${pending.length} pending DM deletes...`);
+  for (const p of pending) {
+    const delay = Math.max(0, new Date(p.delete_at) - Date.now());
+    setTimeout(async () => {
+      try {
+        await bot.deleteMessage(p.chat_id, p.message_id);
+      } catch (err) {
+        console.error("Recovered delete error:", err.message);
+      }
+      await PendingDelete.deleteOne({ _id: p._id }).catch(() => {});
+      // delivered_to se bhi remove karo
+      await FileRecord.updateMany({}, { $pull: { delivered_to: p.chat_id } }).catch(() => {});
+    }, delay);
+  }
 }
 
 async function startBot() {
@@ -159,6 +202,9 @@ async function startBot() {
   const BOT_USERNAME = me.username;
   console.log(`Bot started: @${BOT_USERNAME}`);
 
+  // Server restart pe pending deletes recover karo
+  await recoverPendingDeletes(bot);
+
   // ── /start ──────────────────────────────────────────────────────────────────
   bot.onText(/\/start(.*)/, async (msg, match) => {
     const chatId = msg.chat.id;
@@ -185,7 +231,28 @@ async function startBot() {
       try {
         const record = await FileRecord.findOne({ code: { $regex: new RegExp(`^${param}$`, "i") } });
         if (!record) return bot.sendMessage(chatId, `File not found. Link may be invalid or expired.`);
-        await sendFile(bot, chatId, record);
+
+        const isVideo = record.file_type === "video" || record.file_type === "video_note";
+
+        // Agar video hai — check karo 24hr ke andar already deliver ho chuki hai kya
+        if (isVideo && record.delivered_to.includes(chatId)) {
+          return bot.sendMessage(chatId, `⚠️ This video has already been delivered to you. It will be auto-deleted from your DM within 24 hours of first delivery.`);
+        }
+
+        // Video bhejo
+        const sentMsg = await sendFile(bot, chatId, record);
+
+        // Agar video hai — 24hr baad user ke DM se delete karo (DB mein save)
+        if (isVideo) {
+          const deleteAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+          await scheduleDelete(bot, chatId, sentMsg.message_id, deleteAt);
+          // delivered_to mein chatId add karo, 24hr baad remove karne ke liye bhi schedule karo
+          await FileRecord.updateOne({ _id: record._id }, { $addToSet: { delivered_to: chatId } });
+          setTimeout(async () => {
+            await FileRecord.updateOne({ _id: record._id }, { $pull: { delivered_to: chatId } }).catch(() => {});
+          }, 24 * 60 * 60 * 1000);
+          await bot.sendMessage(chatId, `⚠️ Ye video aapke DM se 24 ghante baad automatically delete ho jaayegi.`);
+        }
       } catch (err) {
         console.error("Deep link error:", err.message);
         bot.sendMessage(chatId, `Error occurred. Please try again.`);
@@ -434,17 +501,13 @@ async function startBot() {
 
       // Normal single save
       const code = await getUniqueCode();
-      const isVideo = fileInfo.file_type === "video" || fileInfo.file_type === "video_note";
-      const expiresAt = isVideo ? new Date(Date.now() + 24 * 60 * 60 * 1000) : null;
       await FileRecord.create({
         code, file_id: fileInfo.file_id, file_type: fileInfo.file_type,
-        file_name: fileInfo.file_name, uploaded_by: userId, expires_at: expiresAt,
+        file_name: fileInfo.file_name, uploaded_by: userId, expires_at: null,
       });
       const link = `https://t.me/${BOT_USERNAME}?start=${code}`;
       await bot.deleteMessage(chatId, processing.message_id);
-      const caption = isVideo
-        ? `✅ ${fileInfo.file_name}\n\n⚠️ This video link will expire in 24 hours.\n\nClick the button to get the file:`
-        : `✅ ${fileInfo.file_name}\n\nLink pe click karo — file aa jaayegi:`;
+      const caption = `✅ ${fileInfo.file_name}\n\nLink pe click karo — file aa jaayegi:`;
       await bot.sendMessage(chatId, caption,
         { reply_markup: { inline_keyboard: [[{ text: "📥 File Lo", url: link }]] } }
       );
@@ -495,22 +558,18 @@ async function startBot() {
     const processing = await bot.sendMessage(chatId, `⏳ Saving...`);
     try {
       const code = await getUniqueCode();
-      const isVideo = fileInfo.file_type === "video" || fileInfo.file_type === "video_note";
-      const expiresAt = isVideo ? new Date(Date.now() + 24 * 60 * 60 * 1000) : null;
       await FileRecord.create({
         code,
         file_id: fileInfo.file_id,
         file_type: fileInfo.file_type,
         file_name: fileInfo.file_name,
         uploaded_by: userId,
-        expires_at: expiresAt,
+        expires_at: null,
       });
 
       const link = `https://t.me/${BOT_USERNAME}?start=${code}`;
       await bot.deleteMessage(chatId, processing.message_id);
-      const caption = isVideo
-        ? `✅ ${fileInfo.file_name}\n\n⚠️ This video link will expire in 24 hours.\n\nClick the button to get the file:`
-        : `✅ ${fileInfo.file_name}\n\nLink pe click karo — file aa jaayegi:`;
+      const caption = `✅ ${fileInfo.file_name}\n\nLink pe click karo — file aa jaayegi:`;
       await bot.sendMessage(chatId, caption,
         { reply_markup: { inline_keyboard: [[{ text: "📥 File Lo", url: link }]] } }
       );
