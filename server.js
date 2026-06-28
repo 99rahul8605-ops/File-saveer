@@ -499,13 +499,11 @@ async function startBot() {
     }
 
     try {
-      // Protected content handle karne ke liye:
-      // Step 1: Admin ke DM mein copyMessage karo (protected bhi copy hota hai)
+      // Step 1: Admin ke DM mein copy karo — protected content bhi chalega, log channel admin ki zaroorat nahi
       const copied = await bot.copyMessage(chatId, fromChatId, messageId);
       const tempMsgId = copied.message_id;
 
-      // Step 2: Us copied message (jo ab protected nahi) ko DM mein forward karo
-      // forwardMessage poora message object return karta hai — file_id milega
+      // Step 2: Us copied message ko apne DM mein hi forward karo — poora message object milega (file_id samet)
       let forwarded;
       try {
         forwarded = await bot.forwardMessage(chatId, chatId, tempMsgId);
@@ -517,11 +515,11 @@ async function startBot() {
       // File info extract karo
       const fileInfo = extractFileInfo(forwarded);
 
-      // Admin ke DM se dono temp messages delete karo (user ko dikhne nahi chahiye)
+      // Dono temp messages admin ke DM se turant delete karo
       await bot.deleteMessage(chatId, tempMsgId).catch(() => {});
       await bot.deleteMessage(chatId, forwarded.message_id).catch(() => {});
 
-      // LOG_CHAT_ID mein log karo
+      // LOG_CHAT_ID mein silently log karo — fail ho to koi problem nahi
       await bot.copyMessage(LOG_CHAT_ID, fromChatId, messageId).catch(() => {});
 
       if (!fileInfo) {
@@ -561,11 +559,13 @@ async function startBot() {
       console.error("Link fetch error:", err.message);
       const errText =
         err.message.includes("chat not found") || err.message.includes("CHAT_ADMIN_REQUIRED")
-          ? `❌ Bot us group/channel ka member nahi hai.\nPehle bot ko wahan add karo.`
+          ? `❌ Bot source channel/group ka member nahi hai.\nPehle bot ko wahan add karo (sirf member kaafi hai, admin nahi chahiye).`
         : err.message.includes("MESSAGE_ID_INVALID") || err.message.includes("not found")
           ? `❌ Message nahi mila. Link sahi hai?`
         : err.message.includes("PEER_ID_INVALID")
-          ? `❌ Is group/channel tak access nahi.\nBot ko wahan member banao.`
+          ? `❌ Source channel tak access nahi.\nBot ko us channel mein member banao.`
+        : err.message.includes("need administrator") || err.message.includes("not enough rights")
+          ? `❌ Bot ko source channel mein thodi permission chahiye.\nChannel settings mein bot ki permissions check karo.`
         : `❌ Error: ${err.message}`;
       try {
         await bot.editMessageText(errText, { chat_id: chatId, message_id: processing.message_id });
