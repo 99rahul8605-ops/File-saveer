@@ -499,10 +499,36 @@ async function startBot() {
     }
 
     try {
-      // Log channel mein forward karo — response mein seedha file_id milti hai — delete karo
-      const forwarded = await bot.forwardMessage(LOG_CHAT_ID, fromChatId, messageId);
-      await bot.deleteMessage(LOG_CHAT_ID, forwarded.message_id).catch(() => {});
-      const fileInfo = extractFileInfo(forwarded);
+      // Log channel mein copy karo — file_id lo — delete karo
+      // User ke DM mein kuch nahi aayega
+      const fileInfo = await new Promise(async (resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("timeout")), 15000);
+
+        const handler = async (m) => {
+          // channel_post aur message dono handle karo (group ya channel dono ke liye)
+          if (m.chat.id === LOG_CHAT_ID) {
+            clearTimeout(timer);
+            bot.removeListener("channel_post", handler);
+            bot.removeListener("message", handler);
+            const info = extractFileInfo(m);
+            // Log channel se copied message delete karo
+            await bot.deleteMessage(LOG_CHAT_ID, m.message_id).catch(() => {});
+            resolve(info);
+          }
+        };
+        // Dono events listen karo — channel ho ya group
+        bot.on("channel_post", handler);
+        bot.on("message", handler);
+
+        try {
+          await bot.copyMessage(LOG_CHAT_ID, fromChatId, messageId);
+        } catch (err) {
+          clearTimeout(timer);
+          bot.removeListener("channel_post", handler);
+          bot.removeListener("message", handler);
+          reject(err);
+        }
+      });
 
       if (!fileInfo) {
         return bot.editMessageText(
