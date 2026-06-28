@@ -473,6 +473,30 @@ async function startBot() {
 
     const processing = await bot.sendMessage(chatId, `⏳ Link se file fetch kar raha hoon...`);
 
+    // Public group hai to pehle bot membership check karo
+    if (!isPrivate && username) {
+      try {
+        const botMember = await bot.getChatMember(`@${username}`, (await bot.getMe()).id);
+        if (!botMember || botMember.status === "left" || botMember.status === "kicked") {
+          return bot.editMessageText(
+            `❌ Bot @${username} group/channel ka member nahi hai.\n\n` +
+            `✅ Fix karo:\n` +
+            `1. Pehle bot ko @${username} mein add karo (member ke roop mein)\n` +
+            `2. Phir dobara yeh link bhejo.\n\n` +
+            `💡 Public group bhi ho to bot ko add karna zaroori hai — Telegram ka rule hai.`,
+            { chat_id: chatId, message_id: processing.message_id }
+          );
+        }
+      } catch (memberErr) {
+        // getChatMember fail hua matlab bot wahan hai hi nahi
+        return bot.editMessageText(
+          `❌ Bot @${username} mein nahi hai ya access nahi.\n\n` +
+          `✅ Pehle bot ko us group/channel mein add karo, phir dobara try karo.`,
+          { chat_id: chatId, message_id: processing.message_id }
+        );
+      }
+    }
+
     try {
       const forwarded = await bot.forwardMessage(chatId, fromChatId, messageId);
       const fileInfo  = extractFileInfo(forwarded);
