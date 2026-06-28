@@ -5,10 +5,11 @@ const express = require("express");
 const TOKEN = process.env.BOT_TOKEN;
 const MONGO_URI = process.env.MONGO_URI;
 const ADMIN_ID = parseInt(process.env.ADMIN_ID || "0"); // Telegram user ID
+const LOG_CHAT_ID = parseInt(process.env.LOG_CHAT_ID || "0"); // Log channel ID
 const PORT = process.env.PORT || 3000;
 
-if (!TOKEN || !MONGO_URI || !ADMIN_ID) {
-  console.error("Missing env: BOT_TOKEN, MONGO_URI, ADMIN_ID required hai.");
+if (!TOKEN || !MONGO_URI || !ADMIN_ID || !LOG_CHAT_ID) {
+  console.error("Missing env: BOT_TOKEN, MONGO_URI, ADMIN_ID, LOG_CHAT_ID required hai.");
   process.exit(1);
 }
 
@@ -498,26 +499,25 @@ async function startBot() {
     }
 
     try {
-      // Channel mein hi copy karo (log channel ki tarah) — file_id lo — delete karo
+      // Log channel mein copy karo — file_id lo — delete karo
       // User ke DM mein kuch nahi aayega
       const fileInfo = await new Promise(async (resolve, reject) => {
         const timer = setTimeout(() => reject(new Error("timeout")), 10000);
 
-        // Channel mein aane wale channel_post ko capture karo
         const handler = async (m) => {
-          if (m.chat.id === fromChatId && m.message_id !== messageId) {
+          if (m.chat.id === LOG_CHAT_ID) {
             clearTimeout(timer);
             bot.removeListener("channel_post", handler);
             const info = extractFileInfo(m);
-            // Sirf copied message delete karo, original nahi
-            await bot.deleteMessage(fromChatId, m.message_id).catch(() => {});
+            // Log channel se copied message delete karo
+            await bot.deleteMessage(LOG_CHAT_ID, m.message_id).catch(() => {});
             resolve(info);
           }
         };
         bot.on("channel_post", handler);
 
         try {
-          await bot.copyMessage(fromChatId, fromChatId, messageId);
+          await bot.copyMessage(LOG_CHAT_ID, fromChatId, messageId);
         } catch (err) {
           clearTimeout(timer);
           bot.removeListener("channel_post", handler);
