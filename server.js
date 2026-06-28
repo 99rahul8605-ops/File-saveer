@@ -499,36 +499,23 @@ async function startBot() {
     }
 
     try {
-      // Log channel mein copy karo — file_id lo — delete karo
-      // User ke DM mein kuch nahi aayega
-      const fileInfo = await new Promise(async (resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error("timeout")), 15000);
+      // Seedha source se admin ke DM mein forward karo — poora message object milta hai
+      // Koi event listener nahi, koi race condition nahi
+      let forwarded;
+      try {
+        forwarded = await bot.forwardMessage(chatId, fromChatId, messageId);
+      } catch (fwdErr) {
+        throw fwdErr; // source access error — niche catch karega
+      }
 
-        const handler = async (m) => {
-          // channel_post aur message dono handle karo (group ya channel dono ke liye)
-          if (m.chat.id === LOG_CHAT_ID) {
-            clearTimeout(timer);
-            bot.removeListener("channel_post", handler);
-            bot.removeListener("message", handler);
-            const info = extractFileInfo(m);
-            // Log channel se copied message delete karo
-            await bot.deleteMessage(LOG_CHAT_ID, m.message_id).catch(() => {});
-            resolve(info);
-          }
-        };
-        // Dono events listen karo — channel ho ya group
-        bot.on("channel_post", handler);
-        bot.on("message", handler);
+      // File info extract karo
+      const fileInfo = extractFileInfo(forwarded);
 
-        try {
-          await bot.copyMessage(LOG_CHAT_ID, fromChatId, messageId);
-        } catch (err) {
-          clearTimeout(timer);
-          bot.removeListener("channel_post", handler);
-          bot.removeListener("message", handler);
-          reject(err);
-        }
-      });
+      // Admin ke DM se yeh forwarded message delete karo (user ko dikhna nahi chahiye)
+      await bot.deleteMessage(chatId, forwarded.message_id).catch(() => {});
+
+      // Ab LOG_CHAT_ID mein bhi copy karo (logging ke liye, agar chahiye)
+      await bot.copyMessage(LOG_CHAT_ID, fromChatId, messageId).catch(() => {});
 
       if (!fileInfo) {
         return bot.editMessageText(
