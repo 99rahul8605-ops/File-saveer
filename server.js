@@ -498,28 +498,29 @@ async function startBot() {
     }
 
     try {
-      // copyMessage + one-time listener se file_id capture karo
+      // Channel mein hi copy karo (log channel ki tarah) — file_id lo — delete karo
+      // User ke DM mein kuch nahi aayega
       const fileInfo = await new Promise(async (resolve, reject) => {
         const timer = setTimeout(() => reject(new Error("timeout")), 10000);
 
-        // One-time message listener — copied message aate hi capture karo aur delete karo
+        // Channel mein aane wale channel_post ko capture karo
         const handler = async (m) => {
-          if (m.chat.id === chatId) {
+          if (m.chat.id === fromChatId && m.message_id !== messageId) {
             clearTimeout(timer);
-            bot.removeListener("message", handler);
+            bot.removeListener("channel_post", handler);
             const info = extractFileInfo(m);
-            // Copied message turant delete karo — user ko nahi dikhna chahiye
-            await bot.deleteMessage(chatId, m.message_id).catch(() => {});
+            // Sirf copied message delete karo, original nahi
+            await bot.deleteMessage(fromChatId, m.message_id).catch(() => {});
             resolve(info);
           }
         };
-        bot.on("message", handler);
+        bot.on("channel_post", handler);
 
         try {
-          await bot.copyMessage(chatId, fromChatId, messageId);
+          await bot.copyMessage(fromChatId, fromChatId, messageId);
         } catch (err) {
           clearTimeout(timer);
-          bot.removeListener("message", handler);
+          bot.removeListener("channel_post", handler);
           reject(err);
         }
       });
