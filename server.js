@@ -498,29 +498,38 @@ async function startBot() {
     }
 
     try {
-      // copyMessage use karo — forward nahi hota, silently copy hota hai
-      const copied = await bot.copyMessage(chatId, fromChatId, messageId);
-      // copyMessage sirf {message_id} return karta hai, isliye sent message ko track karo
-      await wait(800);
-      const updates = await bot.getUpdates({ offset: -1, limit: 5 });
-      let fileInfo = null;
-      for (const u of (updates || [])) {
-        const m = u.message;
-        if (m && m.message_id === copied.message_id && m.chat.id === chatId) {
-          fileInfo = extractFileInfo(m);
-          break;
+      // copyMessage + one-time listener se file_id capture karo
+      const fileInfo = await new Promise(async (resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("timeout")), 10000);
+
+        // One-time message listener — copied message aate hi capture karo aur delete karo
+        const handler = async (m) => {
+          if (m.chat.id === chatId) {
+            clearTimeout(timer);
+            bot.removeListener("message", handler);
+            const info = extractFileInfo(m);
+            // Copied message turant delete karo — user ko nahi dikhna chahiye
+            await bot.deleteMessage(chatId, m.message_id).catch(() => {});
+            resolve(info);
+          }
+        };
+        bot.on("message", handler);
+
+        try {
+          await bot.copyMessage(chatId, fromChatId, messageId);
+        } catch (err) {
+          clearTimeout(timer);
+          bot.removeListener("message", handler);
+          reject(err);
         }
-      }
+      });
 
       if (!fileInfo) {
-        await bot.deleteMessage(chatId, copied.message_id).catch(() => {});
         return bot.editMessageText(
           `⚠️ Is message mein koi file nahi mili.\n(sirf document, photo, video, audio save hoti hai)`,
           { chat_id: chatId, message_id: processing.message_id }
         );
       }
-
-      await bot.deleteMessage(chatId, copied.message_id).catch(() => {});
 
       // Bulk session active hai?
       const session = bulkSessions.get(userId);
