@@ -498,18 +498,29 @@ async function startBot() {
     }
 
     try {
-      const forwarded = await bot.forwardMessage(chatId, fromChatId, messageId);
-      const fileInfo  = extractFileInfo(forwarded);
+      // copyMessage use karo — forward nahi hota, silently copy hota hai
+      const copied = await bot.copyMessage(chatId, fromChatId, messageId);
+      // copyMessage sirf {message_id} return karta hai, isliye sent message ko track karo
+      await wait(800);
+      const updates = await bot.getUpdates({ offset: -1, limit: 5 });
+      let fileInfo = null;
+      for (const u of (updates || [])) {
+        const m = u.message;
+        if (m && m.message_id === copied.message_id && m.chat.id === chatId) {
+          fileInfo = extractFileInfo(m);
+          break;
+        }
+      }
 
       if (!fileInfo) {
-        await bot.deleteMessage(chatId, forwarded.message_id).catch(() => {});
+        await bot.deleteMessage(chatId, copied.message_id).catch(() => {});
         return bot.editMessageText(
           `⚠️ Is message mein koi file nahi mili.\n(sirf document, photo, video, audio save hoti hai)`,
           { chat_id: chatId, message_id: processing.message_id }
         );
       }
 
-      await bot.deleteMessage(chatId, forwarded.message_id).catch(() => {});
+      await bot.deleteMessage(chatId, copied.message_id).catch(() => {});
 
       // Bulk session active hai?
       const session = bulkSessions.get(userId);
