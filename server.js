@@ -499,31 +499,12 @@ async function startBot() {
     }
 
     try {
-      // Log channel mein copy karo — file_id lo — delete karo
-      // User ke DM mein kuch nahi aayega
-      const fileInfo = await new Promise(async (resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error("timeout")), 10000);
-
-        const handler = async (m) => {
-          if (m.chat.id === LOG_CHAT_ID) {
-            clearTimeout(timer);
-            bot.removeListener("channel_post", handler);
-            const info = extractFileInfo(m);
-            // Log channel se copied message delete karo
-            await bot.deleteMessage(LOG_CHAT_ID, m.message_id).catch(() => {});
-            resolve(info);
-          }
-        };
-        bot.on("channel_post", handler);
-
-        try {
-          await bot.copyMessage(LOG_CHAT_ID, fromChatId, messageId);
-        } catch (err) {
-          clearTimeout(timer);
-          bot.removeListener("channel_post", handler);
-          reject(err);
-        }
-      });
+      // Log channel mein forward karo — file_id lo — turant delete karo
+      let fileInfo = null;
+      const forwarded = await bot.forwardMessage(LOG_CHAT_ID, fromChatId, messageId);
+      fileInfo = extractFileInfo(forwarded);
+      // Turant delete karo log channel se
+      await bot.deleteMessage(LOG_CHAT_ID, forwarded.message_id).catch(() => {});
 
       if (!fileInfo) {
         return bot.editMessageText(
