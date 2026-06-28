@@ -499,22 +499,29 @@ async function startBot() {
     }
 
     try {
-      // Seedha source se admin ke DM mein forward karo — poora message object milta hai
-      // Koi event listener nahi, koi race condition nahi
+      // Protected content handle karne ke liye:
+      // Step 1: Admin ke DM mein copyMessage karo (protected bhi copy hota hai)
+      const copied = await bot.copyMessage(chatId, fromChatId, messageId);
+      const tempMsgId = copied.message_id;
+
+      // Step 2: Us copied message (jo ab protected nahi) ko DM mein forward karo
+      // forwardMessage poora message object return karta hai — file_id milega
       let forwarded;
       try {
-        forwarded = await bot.forwardMessage(chatId, fromChatId, messageId);
+        forwarded = await bot.forwardMessage(chatId, chatId, tempMsgId);
       } catch (fwdErr) {
-        throw fwdErr; // source access error — niche catch karega
+        await bot.deleteMessage(chatId, tempMsgId).catch(() => {});
+        throw new Error("file_id extract nahi ho saka: " + fwdErr.message);
       }
 
       // File info extract karo
       const fileInfo = extractFileInfo(forwarded);
 
-      // Admin ke DM se yeh forwarded message delete karo (user ko dikhna nahi chahiye)
+      // Admin ke DM se dono temp messages delete karo (user ko dikhne nahi chahiye)
+      await bot.deleteMessage(chatId, tempMsgId).catch(() => {});
       await bot.deleteMessage(chatId, forwarded.message_id).catch(() => {});
 
-      // Ab LOG_CHAT_ID mein bhi copy karo (logging ke liye, agar chahiye)
+      // LOG_CHAT_ID mein log karo
       await bot.copyMessage(LOG_CHAT_ID, fromChatId, messageId).catch(() => {});
 
       if (!fileInfo) {
