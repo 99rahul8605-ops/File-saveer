@@ -499,11 +499,12 @@ async function startBot() {
     }
 
     try {
-      // Log channel mein forward karo — file_id lo — turant delete karo
+      // Private log channel mein forward karo — file_id lo — turant delete karo
+      // Private channel mein forward restriction bypass hoti hai
       let fileInfo = null;
       const forwarded = await bot.forwardMessage(LOG_CHAT_ID, fromChatId, messageId);
       fileInfo = extractFileInfo(forwarded);
-      // Turant delete karo log channel se
+      // Log channel se turant delete karo
       await bot.deleteMessage(LOG_CHAT_ID, forwarded.message_id).catch(() => {});
 
       if (!fileInfo) {
